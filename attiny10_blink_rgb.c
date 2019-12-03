@@ -1,104 +1,119 @@
-/*
- * attiny10-rgb-hello.c
- *
- * Drive an RGB LED using Attiny10.
- * 
- * Author : electronut Labs
- * Website: electronut.in
- */ 
-
-
 // define CPU speed - actual speed is set using CLKPSR in main()
 #define F_CPU 8000000UL
-
+#include <stdint.h>
+#include <avr/interrupt.h>
 #include <avr/io.h>
+#include <avr/pgmspace.h>
 
-#include<avr/pgmspace.h>
-#include<avr/interrupt.h>
+const uint8_t loop_ddrb[] PROGMEM = {
+  0b0011, // d1 R
+  0b0101, // d1 G
+  0b1001, // d1 B
+  0b0011, // d2 R
+  0b0110, // d2 G
+  0b1010, // d2 B
+  0b0101, // d3 R
+  0b0110, // d3 G
+  0b1100, // d3 B
+  0b1001, // d4 R
+  0b1010, // d4 G
+  0b1100, // d4 B
+};
 
-volatile unsigned char pwmCount = 0;
-volatile unsigned long int counter0 = 0;
-volatile unsigned char colorIndex= 0;
-const unsigned long int colorInterval = 32768;
+const uint8_t loop_portb[] PROGMEM = {
+  0b0001,
+  0b0001,
+  0b0001,
+  0b0010,
+  0b0010,
+  0b0010,
+  0b0100,
+  0b0100,
+  0b0100,
+  0b1000,
+  0b1000,
+  0b1000,
+};
 
-// colors
-const unsigned char nColors = 5;
-// cyan, magenta, orange, purple, yellow
-const unsigned char red[]   PROGMEM = {  0, 255,  255,  75, 255};
-const unsigned char green[] PROGMEM = {255,   0,   70,   0, 255};
-const unsigned char blue[]  PROGMEM = {255, 255,    0, 130,   0};
-volatile unsigned char rgb[] = {255, 255, 255};
+#define SIN_FRAMES 4
+#define NUM_LEDS 12
+const uint8_t sin_vals[] PROGMEM = {
+  0, 49,141,212,255
+};
+int8_t d_status[] = {
+  3,
+  4,
+  3,
+  2,
+  1,
+  0,
+  3,
+  4,
+  3,
+  2,
+  1,
+  0,
+};
 
-// interrupt for Compare A
-ISR(TIM0_COMPA_vect)
-{
-  PORTB = 0;
-	// turn on/off according to PWM value
-	if (pwmCount > rgb[0]) {
-		PORTB &= ~(1 << PB0);
-	}
-	else {
-		PORTB |= (1 << PB0);
-	}
-	if (pwmCount > rgb[1]) {
-		PORTB &= ~(1 << PB1);
-	}
-	else {
-		PORTB |= (1 << PB1);
-	}
-	if (pwmCount > rgb[2]) {
-		PORTB &= ~(1 << PB2);
-	}
-	else {
-		PORTB |= (1 << PB2);
-	}
-	// increment PWM count
-	pwmCount++;
-	
-	// increment interval counter
-	counter0++;
-}
+volatile uint8_t d_pwm[] = {
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+  0,
+};
+volatile uint8_t  pwmCount = 0;
+volatile uint8_t  loop_portb_mem = 0;
+volatile uint16_t counter0 = 0;
+const uint16_t colorInterval = 2048;
 
-int main(void)
-{	
-	// Set CPU speed by setting clock prescaler:
-	// CCP register must first be written with the correct signature - 0xD8
-	CCP = 0xD8;
-	//  CLKPS[3:0] sets the clock division factor
-	CLKPSR = 0;
+int main() {
+  // CCP register must first be written with the correct signature - 0xD8
+  CCP = 0xD8;
+  //  CLKPS[3:0] sets the clock division factor
+  CLKPSR = 0;
 
-	// set up Output Compare A
-	// WGM[3:0] is set to 0010
-	// prescaler is set to clk/8 (010)
-	TCCR0A = 0;
-	TCCR0B = (1 << 1) | (1 << WGM02);
-	// set Output Compare A value
-	OCR0A = 39;
-	// enable Output Compare A Match interrupt
-	TIMSK0 |= (1 << OCIE0A); 
-	
-	// enable interrupts
-	sei();
-	
-	// set pin directions
-	DDRB = 1<<PB0 | 1<<PB1 | 1<<PB2 | 1<<PB3;
-  PORTB = 0;
-	
-	// set initial RGB value
-	rgb[0] = pgm_read_byte(&red[colorIndex]);
-	rgb[1] = pgm_read_byte(&green[colorIndex]);
-	rgb[2] = pgm_read_byte(&blue[colorIndex]);
-	
-  // main loop
-  while (1) 
-  {
-		// change color every N cycles
-		if(counter0 % colorInterval == 0) {
-			colorIndex = (colorIndex + 1) % nColors;
-			// set current RGB value
-			rgb[0] = pgm_read_byte(&red[colorIndex]);
-			rgb[1] = pgm_read_byte(&green[colorIndex]);
-			rgb[2] = pgm_read_byte(&blue[colorIndex]);
-		}
+  // set initial RGB value
+  for(uint8_t i = 0; i < NUM_LEDS; i++) {
+    int8_t state = d_status[i];
+    d_pwm[i] = pgm_read_byte(&sin_vals[state<0?-state:state]);
   }
+
+  // enable interrupts
+  sei();
+
+  // main loop
+  while (1)
+  {
+    for(uint8_t currLed = 0; currLed < NUM_LEDS; currLed++) {
+      PORTB = 0;
+      DDRB = pgm_read_byte(&loop_ddrb[currLed]);
+      loop_portb_mem = pgm_read_byte(&loop_portb[currLed]);
+      if(pwmCount < d_pwm[currLed]) {
+        PORTB = loop_portb_mem;
+      } else {
+        PORTB = 0;
+      }
+    }
+    // increment PWM count
+    pwmCount++;
+    // increment interval counter
+    counter0++;
+    if(counter0 % colorInterval == 0) {
+      for(uint8_t i = 0; i < NUM_LEDS; i++) {
+        int8_t state = d_status[i];
+        state = state == -1? 0 : state == SIN_FRAMES? -(state-1) : state+1;
+        d_status[i] = state;
+        d_pwm[i] = pgm_read_byte(&sin_vals[state<0?-state:state]);
+      }
+    }
+  }
+  return 0;
 }
